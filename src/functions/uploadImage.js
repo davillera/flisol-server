@@ -6,53 +6,48 @@ app.http("uploadImage", {
   authLevel: "anonymous",
   handler: async (request, context) => {
     try {
-      context.log(`📢 Recibiendo imagen en: ${request.url}`);
+      context.log("📸 Recibiendo imagen...");
 
-      const { imageBuffer, fileExtension } = await extractImage(request);
-      if (!imageBuffer) return { status: 400, body: "Debe subir una imagen válida." };
+      const contentType = request.headers.get("content-type");
+      if (!contentType || !contentType.startsWith("image/")) {
+        return { status: 400, body: "El Content-Type debe ser image/jpeg, image/png, etc." };
+      }
+
+      const fileExtension = contentType.split("/")[1];
+      const arrayBuffer = await request.arrayBuffer();
+      const imageBuffer = Buffer.from(arrayBuffer);
 
       const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
       const containerName = process.env.AZURE_STORAGE_CONTAINER_NAME;
       if (!connectionString || !containerName) {
-        return { status: 500, body: "Configuraciones de almacenamiento faltantes." };
+        return { status: 500, body: "Variables de entorno faltantes." };
       }
 
       const blobName = `${Date.now()}.${fileExtension}`;
-      const imageUrl = await uploadToBlob(connectionString, containerName, blobName, imageBuffer, fileExtension);
+      const imageUrl = await uploadToBlob(connectionString, containerName, blobName, imageBuffer, contentType);
 
-      return { status: 201, body: JSON.stringify({ message: "✅ Imagen subida correctamente.", imageUrl }) };
+      return {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "✅ Imagen subida correctamente.", imageUrl }),
+      };
     } catch (error) {
-      context.log.error("❌ Error al subir la imagen:", error);
-      return { status: 500, body: "Error en el servidor." };
+      context.log.error("❌ Error al subir imagen:", error);
+      return { status: 500, body: "Error interno del servidor." };
     }
   },
 });
 
-async function extractImage(request) {
-  const contentType = request.headers.get("content-type") || "";
-  if (!contentType.startsWith("image/") && !contentType.includes("multipart/form-data")) {
-    return { imageBuffer: null };
-  }
-
-  if (contentType.startsWith("image/")) {
-    return { imageBuffer: await request.arrayBuffer(), fileExtension: contentType.split("/")[1] };
-  }
-
-  const bodyText = await request.text();
-  const match = bodyText.match(/Content-Type: image\/([a-z]+)/);
-  const fileData = bodyText.split("\r\n\r\n")[1];
-
-  if (!match || !fileData) return { imageBuffer: null };
-
-  return { imageBuffer: Buffer.from(fileData.trim(), "binary"), fileExtension: match[1] };
-}
-
-async function uploadToBlob(connectionString, containerName, blobName, imageBuffer, fileExtension) {
+async function uploadToBlob(connectionString, containerName, blobName, imageBuffer, contentType) {
   const blobServiceClient = BlobServiceClient.fromConnectionString(connectionString);
   const containerClient = blobServiceClient.getContainerClient(containerName);
   const blockBlobClient = containerClient.getBlockBlobClient(blobName);
 
-  await blockBlobClient.uploadData(Buffer.from(imageBuffer), { blobHTTPHeaders: { blobContentType: `image/${fileExtension}` } });
+  await blockBlobClient.uploadData(imageBuffer, {
+    blobHTTPHeaders: {
+      blobContentType: contentType,
+    },
+  });
 
   return blockBlobClient.url;
 }
